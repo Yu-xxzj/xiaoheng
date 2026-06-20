@@ -1325,7 +1325,7 @@ async function send() {
             const ev = JSON.parse(payload);
             if (ev.type === 'text') {
                 buffer += ev.content;
-                streamBubble.innerHTML = buffer.replace(/\n/g, '<br>');
+                streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
                 chatBox.scrollTop = chatBox.scrollHeight;
             } else if (ev.type === 'reasoning') {
                 // 可选：显示推理过程（暂时跳过，等稳定再开）

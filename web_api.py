@@ -102,6 +102,35 @@ async def upload_image(file: UploadFile = File(...)):
     }
 
 
+# ── 流式聊天 API (SSE) ─────────────────────
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """流式聊天，返回 Server-Sent Events"""
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        try:
+            for event in agent.run_stream(req.message):
+                data = json.dumps(event, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── 知识库管理 API ─────────────────────────
 
 
@@ -1261,17 +1290,67 @@ async function send() {
     addMsg('user', msg);
     setLoading(true);
 
+    // 创建流式消息气泡（占位）
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `<div class="avatar bot">珩</div><div class="msg-wrap bot"><div class="msg" id="streamMsg"></div><div class="msg-time">${timeStr()}</div></div>`;
+    const typingRow = document.querySelector('.typing-row');
+    if (typingRow) typingRow.remove();
+    chatBox.appendChild(row);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    const streamBubble = document.getElementById('streamMsg');
+
+    let buffer = '';
+
     try {
-        const res = await fetch('/api/chat', {
+        const res = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({message: msg})
         });
-        const data = await res.json();
-        addMsg('assistant', data.response);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let partial = '';
+
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+
+            partial += decoder.decode(value, {stream: true});
+            const lines = partial.split('\\n');
+            partial = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+
+                try {
+                    const ev = JSON.parse(payload);
+                    if (ev.type === 'text') {
+                        buffer += ev.content;
+                        streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    } else if (ev.type === 'tool') {
+                        // 在消息上方显示工具调用提示
+                        const toolNote = document.createElement('div');
+                        toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
+                        toolNote.textContent = `🔧 ${ev.name}`;
+                        row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
+                    }
+                } catch (e) {
+                    // 跳过解析失败的行
+                }
+            }
+        }
     } catch (e) {
-        addMsg('error', '❌ 网络错误，请检查服务器是否运行');
+        streamBubble.innerHTML = '❌ 网络错误，请检查服务器';
     }
+
+    if (!buffer.trim()) {
+        streamBubble.innerHTML = '（模型未返回内容）';
+    }
+    streamBubble.id = '';
     setLoading(false);
     input.focus();
 }

@@ -106,6 +106,70 @@ class LLM:
 
         return result
 
+    def chat_stream(self, messages: list[dict], tools: Optional[list[dict]] = None,
+                    temperature: float = 0.7, max_tokens: int = 4096):
+        """流式调用 LLM，逐 token 产出
+        每次 yield {"type": "text"|"tool_call"|"reasoning", "content": ...}
+        """
+        kwargs = dict(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        stream = self.client.chat.completions.create(**kwargs)
+
+        tool_calls_buf = {}  # index → {id, name, arguments}
+        text_buf = ""
+        reasoning_buf = ""
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                # 可能是 usage 等结束 chunk
+                continue
+
+            # 推理内容
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_buf += delta.reasoning_content
+                yield {"type": "reasoning", "content": delta.reasoning_content}
+
+            # 文本 token
+            if delta.content:
+                text_buf += delta.content
+                yield {"type": "text", "content": delta.content}
+
+            # 工具调用
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_buf:
+                        tool_calls_buf[idx] = {"id": tc.id or "", "name": "", "arguments": ""}
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_buf[idx]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_buf[idx]["arguments"] += tc.function.arguments
+
+        # 全部结束后，如果有工具调用，产出 tool_call 事件
+        finished_tool_calls = []
+        for idx in sorted(tool_calls_buf):
+            tc = tool_calls_buf[idx]
+            finished_tool_calls.append({
+                "id": tc["id"],
+                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+            })
+
+        if finished_tool_calls:
+            yield {"type": "tool_call", "content": finished_tool_calls}
+        elif text_buf:
+            yield {"type": "done", "content": text_buf}
+
 
 # ── 测试 ──
 if __name__ == "__main__":

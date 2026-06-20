@@ -104,6 +104,63 @@ class Agent:
 
         return "抱歉，我未能完成这个任务。请尝试简化或拆分你的问题。"
 
+    def run_stream(self, user_input: str):
+        """流式运行 ReAct 循环，逐 token 产出事件
+        yield 事件格式: {"type": "text"|"tool"|"done"|"error", "content": ...}
+        """
+        self.messages.append({"role": "user", "content": user_input})
+
+        for step in range(1, self.max_steps + 1):
+            text_buf = ""
+            tool_calls = None
+
+            # 流式调用 LLM
+            for event in self.llm.chat_stream(messages=self.messages, tools=TOOL_DEFINITIONS):
+                if event["type"] == "text":
+                    text_buf += event["content"]
+                    yield {"type": "text", "content": event["content"]}
+                elif event["type"] == "reasoning":
+                    yield {"type": "reasoning", "content": event["content"]}
+                elif event["type"] == "tool_call":
+                    tool_calls = event["content"]
+
+            if tool_calls:
+                # 组装 assistant 消息（含工具调用请求）
+                assistant_msg = {"role": "assistant", "content": text_buf}
+                assistant_msg["tool_calls"] = [
+                    {"id": tc["id"], "type": "function", "function": tc["function"]}
+                    for tc in tool_calls
+                ]
+                self.messages.append(assistant_msg)
+
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = execute_tool(name, args)
+                    yield {"type": "tool", "name": name, "content": result[:500]}
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+                # 继续循环（让 LLM 看到工具结果后继续推理）
+                continue
+            else:
+                # 最终回答
+                full_text = text_buf.strip()
+                if not full_text:
+                    full_text = "（模型未返回文本）"
+                self.messages.append({"role": "assistant", "content": full_text})
+                self._trim_memory()
+                self._save_history()
+                yield {"type": "done", "content": full_text}
+                return
+
+        yield {"type": "done", "content": "抱歉，我未能完成这个任务。请尝试简化或拆分你的问题。"}
+
     def reset(self):
         self.messages = [
             {"role": "system", "content": SYSTEM_PROMPT},

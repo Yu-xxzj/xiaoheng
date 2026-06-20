@@ -1327,25 +1327,23 @@ async function send() {
     const streamBubble = document.getElementById('streamMsg');
 
     let buffer = '';
-    let renderQueued = false;
     let renderIndex = 0;  // 已经渲染到的字符位置
+    let renderTimer = null;  // setInterval 句柄
+    const CHAR_PER_TICK = 2; // 每 tick 显示 2 个字符
+    const TICK_MS = 30;      // tick 间隔（毫秒）
 
-    // 渲染节流：每帧渲染一部分，控速让肉眼可见
-    function scheduleRender() {
-        if (renderQueued) return;
-        renderQueued = true;
-        requestAnimationFrame(() => {
-            renderQueued = false;
-            // 每次多渲染 3 个字符（模拟逐字效果）
-            const target = Math.min(renderIndex + 3, buffer.length);
-            if (target > renderIndex) {
+    // 真实时间延迟：每 TICK_MS 显示 CHAR_PER_TICK 个字，模拟打字机效果
+    function startTyping() {
+        if (renderTimer) return;
+        renderTimer = setInterval(() => {
+            if (renderIndex < buffer.length) {
+                const target = Math.min(renderIndex + CHAR_PER_TICK, buffer.length);
                 renderIndex = target;
-                streamBubble.innerHTML = buffer.slice(0, renderIndex).replace(/\\n/g, '<br>');
+                streamBubble.innerHTML = buffer.slice(0, renderIndex).replace(/\n/g, '<br>');
                 chatBox.scrollTop = chatBox.scrollHeight;
-                // 如果没有渲染完，继续调度
-                if (renderIndex < buffer.length) scheduleRender();
             }
-        });
+            // 如果 buffer 没有更多内容，timer 继续等待新 token 到来
+        }, TICK_MS);
     }
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1359,7 +1357,7 @@ async function send() {
         const ev = JSON.parse(e.data);
         if (ev.type === 'text') {
             buffer += ev.content;
-            scheduleRender();
+            startTyping();
         } else if (ev.type === 'reasoning') {
             // 可选显示推理过程
         } else if (ev.type === 'tool') {
@@ -1369,9 +1367,13 @@ async function send() {
             row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
         } else if (ev.type === 'done' || ev.type === 'error') {
             ws.close();
-            // 确保所有内容最终渲染
+            // 停止打字机，立即显示全部内容
+            if (renderTimer) {
+                clearInterval(renderTimer);
+                renderTimer = null;
+            }
             renderIndex = buffer.length;
-            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\\n/g, '<br>');
+            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\n/g, '<br>');
             streamBubble.id = '';
             setLoading(false);
             input.focus();

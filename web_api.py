@@ -1339,7 +1339,7 @@ async function send() {
             if (renderIndex < buffer.length) {
                 const target = Math.min(renderIndex + CHAR_PER_TICK, buffer.length);
                 renderIndex = target;
-                streamBubble.innerHTML = buffer.slice(0, renderIndex).replace(/\n/g, '<br>');
+                streamBubble.innerHTML = buffer.slice(0, renderIndex).replace(/\\n/g, '<br>');
                 chatBox.scrollTop = chatBox.scrollHeight;
             }
             // 如果 buffer 没有更多内容，timer 继续等待新 token 到来
@@ -1373,7 +1373,7 @@ async function send() {
                 renderTimer = null;
             }
             renderIndex = buffer.length;
-            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\n/g, '<br>');
+            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\\n/g, '<br>');
             streamBubble.id = '';
             setLoading(false);
             input.focus();

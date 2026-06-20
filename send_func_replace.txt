@@ -1,0 +1,67 @@
+async function send() {
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+    addMsg('user', msg);
+    setLoading(true);
+
+    // 创建流式消息气泡（占位）
+    const row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.innerHTML = `<div class="avatar bot">珩</div><div class="msg-wrap bot"><div class="msg" id="streamMsg"></div><div class="msg-time">${timeStr()}</div></div>`;
+    const typingRow = document.querySelector('.typing-row');
+    if (typingRow) typingRow.remove();
+    chatBox.appendChild(row);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    const streamBubble = document.getElementById('streamMsg');
+
+    let buffer = '';
+    let renderQueued = false;
+
+    // 渲染节流：每帧最多更新一次 DOM，保证肉眼可见逐字效果
+    function scheduleRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+            renderQueued = false;
+            streamBubble.innerHTML = buffer.replace(/\n/g, '<br>');
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+    }
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+        ws.send(JSON.stringify({message: msg}));
+    };
+
+    ws.onmessage = function(e) {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'text') {
+            buffer += ev.content;
+            scheduleRender();
+        } else if (ev.type === 'reasoning') {
+            // 可选显示推理过程
+        } else if (ev.type === 'tool') {
+            const toolNote = document.createElement('div');
+            toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
+            toolNote.textContent = `🔧 ${ev.name}`;
+            row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
+        } else if (ev.type === 'done' || ev.type === 'error') {
+            ws.close();
+            // 最终确保内容完整
+            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\n/g, '<br>');
+            streamBubble.id = '';
+            setLoading(false);
+            input.focus();
+        }
+    };
+
+    ws.onerror = function() {
+        streamBubble.innerHTML = buffer || '❌ 连接失败';
+        streamBubble.id = '';
+        setLoading(false);
+        input.focus();
+    };
+}

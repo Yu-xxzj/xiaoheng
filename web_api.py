@@ -1327,6 +1327,27 @@ async function send() {
     const streamBubble = document.getElementById('streamMsg');
 
     let buffer = '';
+    let renderQueued = false;
+    let renderIndex = 0;  // 已经渲染到的字符位置
+
+    // 渲染节流：每帧渲染一部分，控速让肉眼可见
+    function scheduleRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+            renderQueued = false;
+            // 每次多渲染 3 个字符（模拟逐字效果）
+            const target = Math.min(renderIndex + 3, buffer.length);
+            if (target > renderIndex) {
+                renderIndex = target;
+                streamBubble.innerHTML = buffer.slice(0, renderIndex).replace(/\\n/g, '<br>');
+                chatBox.scrollTop = chatBox.scrollHeight;
+                // 如果没有渲染完，继续调度
+                if (renderIndex < buffer.length) scheduleRender();
+            }
+        });
+    }
+
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(proto + '//' + location.host + '/ws');
 
@@ -1338,8 +1359,7 @@ async function send() {
         const ev = JSON.parse(e.data);
         if (ev.type === 'text') {
             buffer += ev.content;
-            streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
-            chatBox.scrollTop = chatBox.scrollHeight;
+            scheduleRender();
         } else if (ev.type === 'reasoning') {
             // 可选显示推理过程
         } else if (ev.type === 'tool') {
@@ -1349,9 +1369,9 @@ async function send() {
             row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
         } else if (ev.type === 'done' || ev.type === 'error') {
             ws.close();
-            if (!buffer.trim()) {
-                streamBubble.innerHTML = '（模型未返回内容）';
-            }
+            // 确保所有内容最终渲染
+            renderIndex = buffer.length;
+            streamBubble.innerHTML = (buffer || '（模型未返回内容）').replace(/\\n/g, '<br>');
             streamBubble.id = '';
             setLoading(false);
             input.focus();

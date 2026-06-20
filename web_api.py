@@ -105,14 +105,14 @@ async def upload_image(file: UploadFile = File(...)):
 # ── 流式聊天 API (SSE) ─────────────────────
 
 
-@app.post("/api/chat/stream")
-async def chat_stream(req: ChatRequest):
-    """流式聊天，返回 Server-Sent Events"""
+@app.get("/api/chat/stream")
+async def chat_stream_get(message: str = ""):
+    """流式聊天 GET 版（给 EventSource 用）"""
     from fastapi.responses import StreamingResponse
 
     async def event_generator():
         try:
-            for event in agent.run_stream(req.message):
+            for event in agent.run_stream(message):
                 data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {data}\n\n"
         except Exception as e:
@@ -124,7 +124,7 @@ async def chat_stream(req: ChatRequest):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
@@ -1301,58 +1301,54 @@ async function send() {
     const streamBubble = document.getElementById('streamMsg');
 
     let buffer = '';
+    let closed = false;
 
-    try {
-        const res = await fetch('/api/chat/stream', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message: msg})
-        });
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let partial = '';
+    // 用 EventSource 替代 fetch ReadableStream — 专为 SSE 设计，不缓冲
+    const url = '/api/chat/stream?message=' + encodeURIComponent(msg);
+    const evtSource = new EventSource(url);
 
-        while (true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-
-            partial += decoder.decode(value, {stream: true});
-            const lines = partial.split('\\n');
-            partial = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const payload = line.slice(6).trim();
-                if (payload === '[DONE]') continue;
-
-                try {
-                    const ev = JSON.parse(payload);
-                    if (ev.type === 'text') {
-                        buffer += ev.content;
-                        streamBubble.innerHTML = buffer.replace(/\n/g, '<br>');
-                        chatBox.scrollTop = chatBox.scrollHeight;
-                    } else if (ev.type === 'tool') {
-                        // 在消息上方显示工具调用提示
-                        const toolNote = document.createElement('div');
-                        toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
-                        toolNote.textContent = `🔧 ${ev.name}`;
-                        row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
-                    }
-                } catch (e) {
-                    // 跳过解析失败的行
-                }
+    evtSource.onmessage = function(e) {
+        if (closed) return;
+        const payload = e.data.trim();
+        if (payload === '[DONE]') {
+            evtSource.close();
+            closed = true;
+            if (!buffer.trim()) {
+                streamBubble.innerHTML = '（模型未返回内容）';
             }
+            streamBubble.id = '';
+            setLoading(false);
+            input.focus();
+            return;
         }
-    } catch (e) {
-        streamBubble.innerHTML = '❌ 网络错误，请检查服务器';
-    }
+        try {
+            const ev = JSON.parse(payload);
+            if (ev.type === 'text') {
+                buffer += ev.content;
+                streamBubble.innerHTML = buffer.replace(/\n/g, '<br>');
+                chatBox.scrollTop = chatBox.scrollHeight;
+            } else if (ev.type === 'reasoning') {
+                // 可选：显示推理过程（暂时跳过，等稳定再开）
+            } else if (ev.type === 'tool') {
+                const toolNote = document.createElement('div');
+                toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
+                toolNote.textContent = `🔧 ${ev.name}`;
+                row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
+            }
+        } catch (e) {
+            // 跳过解析失败的行
+        }
+    };
 
-    if (!buffer.trim()) {
-        streamBubble.innerHTML = '（模型未返回内容）';
-    }
-    streamBubble.id = '';
-    setLoading(false);
-    input.focus();
+    evtSource.onerror = function() {
+        if (closed) return;
+        evtSource.close();
+        closed = true;
+        streamBubble.innerHTML = buffer || '❌ 连接断开，请重试';
+        streamBubble.id = '';
+        setLoading(false);
+        input.focus();
+    };
 }
 
 async function loadHistory() {

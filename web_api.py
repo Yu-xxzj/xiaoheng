@@ -1379,7 +1379,7 @@ function kbRenderList(docs, query) {
     }
     let html = '';
     for (const doc of docs) {
-        const preview = (doc.content || '').slice(0, 80).replace(/\n/g, ' ');
+        const preview = (doc.content || '').slice(0, 80).replace(/\\n/g, ' ');
         const highlighted = query ? highlightText(doc.title, query) : escapeHtml(doc.title);
         html += `<div class="kb-list-item" onclick="kbShowDetail('${doc.id}')">
             <div class="kb-item-title">${highlighted}</div>
@@ -1401,7 +1401,7 @@ function highlightText(text, query) {
     const words = query.split(/\s+/).filter(w => w.length > 0);
     let result = escaped;
     for (const word of words) {
-        const re = new RegExp('(' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+        const re = new RegExp('(' + word.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + ')', 'gi');
         result = result.replace(re, '<strong style="color:#8c8cff">$1</strong>');
     }
     return result;
@@ -1442,7 +1442,7 @@ function kbRenderResults(docs, query) {
     }
     let html = '';
     for (const doc of docs) {
-        const preview = (doc.content || '').slice(0, 80).replace(/\n/g, ' ');
+        const preview = (doc.content || '').slice(0, 80).replace(/\\n/g, ' ');
         const score = doc._score ? Math.round(doc._score * 100) : 0;
         html += `<div class="kb-list-item" onclick="kbShowDetail('${doc.id}')">
             <div class="kb-item-title">${highlightText(doc.title, query)} <span class="kb-item-score">${score}%</span></div>

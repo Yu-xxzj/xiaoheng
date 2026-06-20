@@ -148,6 +148,45 @@ class KnowledgeBase:
         self._save()
         return "🗑️ 知识库已清空"
 
+    # ── 管理接口（给 Web UI 用）──
+
+    def get_doc(self, doc_id: str) -> dict | None:
+        """按 ID 获取单篇文档"""
+        for doc in self.documents:
+            if doc["id"] == doc_id:
+                return doc
+        return None
+
+    def delete_doc(self, doc_id: str) -> bool:
+        """按 ID 删除文档"""
+        for i, doc in enumerate(self.documents):
+            if doc["id"] == doc_id:
+                self.documents.pop(i)
+                self._save()
+                return True
+        return False
+
+    def update_doc(self, doc_id: str, title: str = None, content: str = None) -> bool:
+        """更新文档标题和/或内容"""
+        for doc in self.documents:
+            if doc["id"] == doc_id:
+                if title is not None:
+                    doc["title"] = title
+                if content is not None:
+                    doc["content"] = content
+                self._save()
+                return True
+        return False
+
+    def search_raw(self, query: str, top_k: int = 5) -> list:
+        """搜索，返回原始 [(doc, score), ...] 列表（不走高亮格式化）"""
+        if not self.documents or not query.strip():
+            return []
+        tokens = self._tokenize(query)
+        if not tokens:
+            return []
+        return self._tfidf_search(tokens, top_k)
+
     # ── TF-IDF 搜索 ──
 
     def search(self, query: str, top_k: int = 5) -> str:

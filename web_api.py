@@ -16,6 +16,7 @@ if key:
 
 from llm import LLM
 from agent import Agent
+from tools import execute_tool, _kb as kb
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -99,6 +100,84 @@ async def upload_image(file: UploadFile = File(...)):
         "ocr": result,
         "url": f"/uploads/{filename}",
     }
+
+
+# ── 知识库管理 API ─────────────────────────
+
+
+@app.get("/api/kb/list")
+def kb_list():
+    """获取知识库文档列表"""
+    docs = kb.documents[:200]  # 最多200条
+    return {"documents": docs, "total": len(kb.documents)}
+
+
+class KBSearchRequest(BaseModel):
+    query: str
+    top_k: int = 20
+
+
+@app.post("/api/kb/search")
+def kb_search(req: KBSearchRequest):
+    """搜索知识库"""
+    results = kb.search_raw(req.query, req.top_k)
+    items = [{"doc": doc, "score": round(score, 4)} for doc, score in results]
+    return {"results": items}
+
+
+@app.get("/api/kb/doc/{doc_id}")
+def kb_get_doc(doc_id: str):
+    """获取单篇文档"""
+    doc = kb.get_doc(doc_id)
+    if doc is None:
+        return {"error": "文档不存在"}
+    return {"doc": doc}
+
+
+@app.post("/api/kb/delete/{doc_id}")
+def kb_delete(doc_id: str):
+    """删除文档"""
+    ok = kb.delete_doc(doc_id)
+    return {"success": ok}
+
+
+class KBEditRequest(BaseModel):
+    title: str = None
+    content: str = None
+
+
+@app.post("/api/kb/edit/{doc_id}")
+def kb_edit(doc_id: str, req: KBEditRequest):
+    """编辑文档"""
+    ok = kb.update_doc(doc_id, title=req.title, content=req.content)
+    return {"success": ok}
+
+
+class KBAddTextRequest(BaseModel):
+    title: str
+    content: str
+
+
+@app.post("/api/kb/add")
+def kb_add_text(req: KBAddTextRequest):
+    """添加文本笔记"""
+    result = kb.add_text(req.title, req.content)
+    return {"success": True, "message": result}
+
+
+@app.post("/api/kb/upload")
+async def kb_upload(file: UploadFile = File(...)):
+    """上传文件到知识库"""
+    suffix = os.path.splitext(file.filename or "doc.txt")[1] or ".txt"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="wb")
+    content = await file.read()
+    tmp.write(content)
+    tmp_path = tmp.name
+    tmp.close()
+
+    result = kb.add_file(tmp_path)
+    os.unlink(tmp_path)  # 清理临时文件
+    return {"success": True, "message": result}
 
 
 # ====== HTML 前端（赛博科技风）======
@@ -549,6 +628,314 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .btn-camera:active { transform: scale(0.95); }
 
+        /* ── 知识库管理侧栏 ── */
+        .kb-overlay {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 99;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+        .kb-overlay.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .btn-kb {
+            padding: 7px 14px;
+            border: 1px solid rgba(100, 100, 255, 0.2);
+            border-radius: 8px;
+            background: rgba(80, 80, 200, 0.08);
+            color: rgba(180, 180, 255, 0.7);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.25s;
+        }
+        .btn-kb:hover {
+            background: rgba(80, 80, 200, 0.18);
+            border-color: rgba(100, 100, 255, 0.35);
+            color: #c0c0ff;
+        }
+
+        .kb-panel {
+            position: fixed; top: 0; right: 0;
+            width: 420px; max-width: 90vw;
+            height: 100vh;
+            background: rgba(10, 10, 28, 0.92);
+            backdrop-filter: blur(30px);
+            -webkit-backdrop-filter: blur(30px);
+            border-left: 1px solid rgba(100, 100, 255, 0.1);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: -10px 0 60px rgba(0, 0, 0, 0.4);
+        }
+        .kb-panel.show { transform: translateX(0); }
+
+        .kb-panel-header {
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(100, 100, 255, 0.08);
+            flex-shrink: 0;
+            font-size: 16px;
+            font-weight: 700;
+            color: #c0c0f0;
+        }
+        .kb-close {
+            width: 32px; height: 32px;
+            border: 1px solid rgba(100, 100, 255, 0.1);
+            border-radius: 8px;
+            background: transparent;
+            color: rgba(180, 180, 255, 0.4);
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .kb-close:hover {
+            background: rgba(255, 80, 80, 0.1);
+            border-color: rgba(255, 80, 80, 0.3);
+            color: #ff6b6b;
+        }
+
+        .kb-search {
+            padding: 12px 20px;
+            flex-shrink: 0;
+        }
+        .kb-search input {
+            width: 100%;
+            padding: 10px 16px;
+            border: 1px solid rgba(100, 100, 255, 0.1);
+            border-radius: 10px;
+            background: rgba(12, 12, 36, 0.5);
+            color: #d0d0f0;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.25s;
+            font-family: inherit;
+        }
+        .kb-search input:focus {
+            border-color: rgba(100, 100, 255, 0.3);
+            box-shadow: 0 0 20px rgba(80, 80, 255, 0.05);
+        }
+        .kb-search input::placeholder { color: rgba(180, 180, 255, 0.15); }
+
+        .kb-stats {
+            padding: 0 20px 8px;
+            font-size: 11px;
+            color: rgba(180, 180, 255, 0.25);
+            flex-shrink: 0;
+        }
+
+        .kb-actions {
+            padding: 4px 20px 12px;
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+            border-bottom: 1px solid rgba(100, 100, 255, 0.05);
+        }
+        .kb-actions button {
+            flex: 1;
+            padding: 9px 12px;
+            border: 1px solid rgba(100, 100, 255, 0.12);
+            border-radius: 8px;
+            background: rgba(80, 80, 200, 0.05);
+            color: rgba(180, 180, 255, 0.6);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.25s;
+            font-family: inherit;
+        }
+        .kb-actions button:hover {
+            background: rgba(80, 80, 200, 0.15);
+            border-color: rgba(100, 100, 255, 0.3);
+            color: #c0c0ff;
+        }
+
+        /* ── 文档列表 ── */
+        .kb-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px 0;
+        }
+        .kb-list::-webkit-scrollbar { width: 3px; }
+        .kb-list::-webkit-scrollbar-thumb { background: rgba(100, 100, 255, 0.15); border-radius: 2px; }
+
+        .kb-list-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 1px solid rgba(100, 100, 255, 0.03);
+        }
+        .kb-list-item:hover {
+            background: rgba(80, 80, 200, 0.06);
+        }
+        .kb-list-item.active {
+            background: rgba(80, 80, 200, 0.1);
+            border-left: 2px solid rgba(100, 100, 255, 0.3);
+        }
+        .kb-list-item .kb-item-title {
+            font-size: 13px;
+            color: #c0c0f0;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+        .kb-list-item .kb-item-preview {
+            font-size: 11px;
+            color: rgba(180, 180, 255, 0.25);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .kb-list-item .kb-item-score {
+            font-size: 10px;
+            color: rgba(100, 200, 100, 0.3);
+            margin-left: 8px;
+        }
+        .kb-empty {
+            padding: 40px 20px;
+            text-align: center;
+            color: rgba(180, 180, 255, 0.15);
+            font-size: 13px;
+        }
+
+        /* ── 文档详情 ── */
+        .kb-detail {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .kb-detail::-webkit-scrollbar { width: 3px; }
+        .kb-detail::-webkit-scrollbar-thumb { background: rgba(100, 100, 255, 0.15); border-radius: 2px; }
+
+        .kb-detail .kb-detail-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #d0d0ff;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(100, 100, 255, 0.08);
+        }
+        .kb-detail .kb-detail-source {
+            font-size: 11px;
+            color: rgba(180, 180, 255, 0.2);
+        }
+        .kb-detail .kb-detail-content {
+            font-size: 13px;
+            line-height: 1.8;
+            color: #b0b0d0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .kb-detail-actions {
+            display: flex;
+            gap: 8px;
+            padding-top: 8px;
+        }
+        .kb-detail-actions button {
+            padding: 7px 16px;
+            border: 1px solid rgba(100, 100, 255, 0.12);
+            border-radius: 8px;
+            background: rgba(80, 80, 200, 0.05);
+            color: rgba(180, 180, 255, 0.6);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .kb-detail-actions button:hover { background: rgba(80, 80, 200, 0.15); color: #c0c0ff; }
+        .kb-detail-actions .btn-del:hover {
+            background: rgba(255, 80, 80, 0.1);
+            border-color: rgba(255, 80, 80, 0.3);
+            color: #ff6b6b;
+        }
+        .kb-back {
+            padding: 7px 14px;
+            border: none;
+            background: transparent;
+            color: rgba(180, 180, 255, 0.3);
+            font-size: 12px;
+            cursor: pointer;
+            transition: color 0.2s;
+            font-family: inherit;
+        }
+        .kb-back:hover { color: rgba(180, 180, 255, 0.6); }
+
+        /* ── 编辑/新建表单 ── */
+        .kb-edit-form {
+            flex: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+        }
+        .kb-edit-form label {
+            font-size: 12px;
+            color: rgba(180, 180, 255, 0.3);
+        }
+        .kb-edit-form input,
+        .kb-edit-form textarea {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid rgba(100, 100, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(12, 12, 36, 0.5);
+            color: #d0d0f0;
+            font-size: 13px;
+            outline: none;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        .kb-edit-form textarea {
+            min-height: 200px;
+            resize: vertical;
+            line-height: 1.6;
+        }
+        .kb-edit-form input:focus,
+        .kb-edit-form textarea:focus {
+            border-color: rgba(100, 100, 255, 0.3);
+        }
+        .kb-edit-form .form-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .kb-edit-form .form-actions button {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid rgba(100, 100, 255, 0.12);
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .kb-edit-form .btn-save {
+            background: linear-gradient(135deg, #5c5cff, #7c3aff);
+            color: #fff;
+            border: none !important;
+        }
+        .kb-edit-form .btn-save:hover { box-shadow: 0 0 20px rgba(80, 80, 255, 0.2); }
+        .kb-edit-form .btn-cancel {
+            background: transparent;
+            color: rgba(180, 180, 255, 0.4);
+        }
+        .kb-edit-form .btn-cancel:hover {
+            background: rgba(80, 80, 200, 0.1);
+            color: rgba(180, 180, 255, 0.6);
+        }
+
         /* ── 底部署名 ── */
         .footer {
             text-align: center;
@@ -628,6 +1015,17 @@ HTML_PAGE = """<!DOCTYPE html>
                 border-radius: 12px;
                 font-size: 18px;
             }
+            /* 手机端 KB 面板全屏 */
+            .kb-panel {
+                width: 100vw !important;
+                border-radius: 0 !important;
+                border-left: none !important;
+            }
+            .kb-panel-header { padding: 14px 16px; }
+            .kb-search input { font-size: 16px; padding: 10px 14px; }
+            .kb-list-item { padding: 12px 16px; }
+            .kb-detail { padding: 16px; }
+            .kb-edit-form { padding: 16px; }
             .footer { display: none; }
         }
     </style>
@@ -653,6 +1051,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
         </div>
         <div class="header-actions">
+            <button class="btn-kb" onclick="toggleKbPanel()">📚 知识库</button>
             <button class="btn-reset" onclick="resetChat()">⟳ 重置</button>
         </div>
     </header>
@@ -679,6 +1078,27 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <div class="footer">✧ MINI AGENT FRAMEWORK ✧</div>
+</div>
+
+<!-- 知识库管理侧栏 -->
+<div class="kb-overlay" id="kbOverlay" onclick="toggleKbPanel()"></div>
+<div class="kb-panel" id="kbPanel">
+    <div class="kb-panel-header">
+        <span>📚 知识库</span>
+        <button class="kb-close" onclick="toggleKbPanel()">✕</button>
+    </div>
+    <div class="kb-search">
+        <input type="text" id="kbSearch" placeholder="🔍 搜索知识库..." oninput="kbSearchDocs(this.value)">
+    </div>
+    <div class="kb-stats" id="kbStats">加载中...</div>
+    <div class="kb-actions">
+        <button onclick="kbShowAddForm()">✏️ 新建笔记</button>
+        <button onclick="document.getElementById('kbFileInput').click()">📄 导入文件</button>
+        <input type="file" id="kbFileInput" accept=".txt,.md,.py,.json,.yaml,.csv,.pdf" style="display:none" onchange="kbUploadFile(this)" multiple>
+    </div>
+    <div class="kb-list" id="kbList"></div>
+    <div class="kb-detail" id="kbDetail" style="display:none"></div>
+    <div class="kb-edit-form" id="kbEditForm" style="display:none"></div>
 </div>
 
 <script>
@@ -921,6 +1341,297 @@ async function uploadImage(input) {
     setLoading(false);
     document.getElementById('input').focus();
 }
+
+// ── 知识库管理侧栏 ────────────────────────
+
+let kbCurrentDocId = null;  // 当前查看/编辑的文档 ID
+
+function toggleKbPanel() {
+    const panel = document.getElementById('kbPanel');
+    const overlay = document.getElementById('kbOverlay');
+    const showing = panel.classList.toggle('show');
+    overlay.classList.toggle('show', showing);
+    if (showing) {
+        kbLoadList();
+        kbBackToList();
+    }
+}
+
+async function kbLoadList() {
+    const listEl = document.getElementById('kbList');
+    const statsEl = document.getElementById('kbStats');
+    try {
+        const res = await fetch('/api/kb/list');
+        const data = await res.json();
+        statsEl.textContent = `共 ${data.total} 篇文档`;
+        kbRenderList(data.documents, '');
+    } catch (e) {
+        listEl.innerHTML = '<div class="kb-empty">❌ 加载失败</div>';
+        statsEl.textContent = '加载失败';
+    }
+}
+
+function kbRenderList(docs, query) {
+    const listEl = document.getElementById('kbList');
+    if (!docs || docs.length === 0) {
+        listEl.innerHTML = '<div class="kb-empty">📚 知识库是空的<br><br>点"新建笔记"或"导入文件"开始添加</div>';
+        return;
+    }
+    let html = '';
+    for (const doc of docs) {
+        const preview = (doc.content || '').slice(0, 80).replace(/\n/g, ' ');
+        const highlighted = query ? highlightText(doc.title, query) : escapeHtml(doc.title);
+        html += `<div class="kb-list-item" onclick="kbShowDetail('${doc.id}')">
+            <div class="kb-item-title">${highlighted}</div>
+            <div class="kb-item-preview">${escapeHtml(preview)}</div>
+        </div>`;
+    }
+    listEl.innerHTML = html;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function highlightText(text, query) {
+    const escaped = escapeHtml(text);
+    if (!query) return escaped;
+    const words = query.split(/\s+/).filter(w => w.length > 0);
+    let result = escaped;
+    for (const word of words) {
+        const re = new RegExp('(' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+        result = result.replace(re, '<strong style="color:#8c8cff">$1</strong>');
+    }
+    return result;
+}
+
+async function kbSearchDocs(query) {
+    query = query.trim();
+    const listEl = document.getElementById('kbList');
+    const statsEl = document.getElementById('kbStats');
+    kbCurrentDocId = null;  // 搜索时回到列表
+
+    if (!query) {
+        kbLoadList();
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/kb/search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({query, top_k: 50})
+        });
+        const data = await res.json();
+        const items = data.results || [];
+        statsEl.textContent = `找到 ${items.length} 条结果`;
+        const docs = items.map(r => ({...r.doc, _score: r.score}));
+        kbRenderResults(docs, query);
+    } catch (e) {
+        listEl.innerHTML = '<div class="kb-empty">❌ 搜索失败</div>';
+    }
+}
+
+function kbRenderResults(docs, query) {
+    const listEl = document.getElementById('kbList');
+    if (!docs || docs.length === 0) {
+        listEl.innerHTML = `<div class="kb-empty">🔍 未找到相关结果</div>`;
+        return;
+    }
+    let html = '';
+    for (const doc of docs) {
+        const preview = (doc.content || '').slice(0, 80).replace(/\n/g, ' ');
+        const score = doc._score ? Math.round(doc._score * 100) : 0;
+        html += `<div class="kb-list-item" onclick="kbShowDetail('${doc.id}')">
+            <div class="kb-item-title">${highlightText(doc.title, query)} <span class="kb-item-score">${score}%</span></div>
+            <div class="kb-item-preview">${highlightText(preview, query)}</div>
+        </div>`;
+    }
+    listEl.innerHTML = html;
+}
+
+async function kbShowDetail(docId) {
+    kbCurrentDocId = docId;
+    try {
+        const res = await fetch(`/api/kb/doc/${docId}`);
+        const data = await res.json();
+        if (data.error) {
+            document.getElementById('kbList').innerHTML = `<div class="kb-empty">❌ ${data.error}</div>`;
+            return;
+        }
+        const doc = data.doc;
+        const detailEl = document.getElementById('kbDetail');
+        const listEl = document.getElementById('kbList');
+        const formEl = document.getElementById('kbEditForm');
+        formEl.style.display = 'none';
+        listEl.style.display = 'none';
+        detailEl.style.display = 'flex';
+        detailEl.innerHTML = `
+            <button class="kb-back" onclick="kbBackToList()">← 返回列表</button>
+            <div class="kb-detail-title">${escapeHtml(doc.title)}</div>
+            <div class="kb-detail-source">📎 ${escapeHtml(doc.source)}</div>
+            <div class="kb-detail-content">${escapeHtml(doc.content)}</div>
+            <div class="kb-detail-actions">
+                <button onclick="kbShowEditForm('${doc.id}')">✏️ 编辑</button>
+                <button class="btn-del" onclick="kbDeleteDoc('${doc.id}')">🗑️ 删除</button>
+            </div>
+        `;
+    } catch (e) {
+        document.getElementById('kbList').innerHTML = '<div class="kb-empty">❌ 加载失败</div>';
+    }
+}
+
+function kbBackToList() {
+    document.getElementById('kbDetail').style.display = 'none';
+    document.getElementById('kbEditForm').style.display = 'none';
+    document.getElementById('kbList').style.display = '';
+    const searchVal = document.getElementById('kbSearch').value.trim();
+    if (searchVal) kbSearchDocs(searchVal);
+}
+
+function kbShowAddForm() {
+    kbCurrentDocId = null;
+    document.getElementById('kbDetail').style.display = 'none';
+    document.getElementById('kbList').style.display = 'none';
+    const formEl = document.getElementById('kbEditForm');
+    formEl.style.display = 'flex';
+    formEl.innerHTML = `
+        <button class="kb-back" onclick="kbBackToList()">← 返回列表</button>
+        <label>📌 标题</label>
+        <input type="text" id="kbFormTitle" placeholder="输入标题...">
+        <label>📝 内容</label>
+        <textarea id="kbFormContent" placeholder="输入笔记内容..."></textarea>
+        <div class="form-actions">
+            <button class="btn-save" onclick="kbSaveAdd()">✅ 保存</button>
+            <button class="btn-cancel" onclick="kbBackToList()">取消</button>
+        </div>
+    `;
+    document.getElementById('kbFormTitle').focus();
+}
+
+function kbShowEditForm(docId) {
+    kbCurrentDocId = docId;
+    fetch(`/api/kb/doc/${docId}`).then(r => r.json()).then(data => {
+        if (data.error) return;
+        const doc = data.doc;
+        document.getElementById('kbDetail').style.display = 'none';
+        const formEl = document.getElementById('kbEditForm');
+        formEl.style.display = 'flex';
+        formEl.innerHTML = `
+            <button class="kb-back" onclick="kbBackToList()">← 返回列表</button>
+            <label>📌 标题</label>
+            <input type="text" id="kbFormTitle" value="${escapeHtml(doc.title)}">
+            <label>📝 内容</label>
+            <textarea id="kbFormContent">${escapeHtml(doc.content)}</textarea>
+            <div class="form-actions">
+                <button class="btn-save" onclick="kbSaveEdit()">✅ 保存</button>
+                <button class="btn-cancel" onclick="kbBackToList()">取消</button>
+            </div>
+        `;
+        document.getElementById('kbFormTitle').focus();
+    });
+}
+
+async function kbSaveAdd() {
+    const title = document.getElementById('kbFormTitle').value.trim();
+    const content = document.getElementById('kbFormContent').value.trim();
+    if (!title) { alert('请输入标题'); return; }
+    if (!content) { alert('请输入内容'); return; }
+    try {
+        const res = await fetch('/api/kb/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({title, content})
+        });
+        const data = await res.json();
+        if (data.success) {
+            kbBackToList();
+            kbLoadList();
+        } else {
+            alert('保存失败');
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
+    }
+}
+
+async function kbSaveEdit() {
+    const title = document.getElementById('kbFormTitle').value.trim();
+    const content = document.getElementById('kbFormContent').value.trim();
+    if (!title) { alert('请输入标题'); return; }
+    try {
+        const res = await fetch(`/api/kb/edit/${kbCurrentDocId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({title, content})
+        });
+        const data = await res.json();
+        if (data.success) {
+            kbBackToList();
+            kbLoadList();
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
+    }
+}
+
+async function kbDeleteDoc(docId) {
+    if (!confirm('确定要删除这篇文档吗？')) return;
+    try {
+        await fetch(`/api/kb/delete/${docId}`, {method: 'POST'});
+        kbBackToList();
+        kbLoadList();
+    } catch (e) {
+        alert('删除失败');
+    }
+}
+
+async function kbUploadFile(input) {
+    const files = input.files;
+    if (!files || files.length === 0) return;
+
+    const listEl = document.getElementById('kbList');
+    listEl.innerHTML = '<div class="kb-empty">⏳ 正在导入文件...</div>';
+
+    let results = [];
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const res = await fetch('/api/kb/upload', {method: 'POST', body: formData});
+            const data = await res.json();
+            results.push(data.message || '✅ 导入完成');
+        } catch (e) {
+            results.push(`❌ ${file.name}: ${e.message}`);
+        }
+    }
+    input.value = '';
+    kbLoadList();
+    setTimeout(() => {
+        listEl.innerHTML = `<div class="kb-empty">${results.join('<br>')}</div>`;
+        setTimeout(kbLoadList, 2000);
+    }, 100);
+}
+
+// 键盘 ESC 关闭侧栏
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        const panel = document.getElementById('kbPanel');
+        if (panel.classList.contains('show')) toggleKbPanel();
+    }
+});
+
+// 照片上传后自动刷新知识库列表（如果面板开着）
+const origAddMsg = addMsg;
+addMsg = function(role, text) {
+    origAddMsg(role, text);
+    if (role === 'assistant' && text.includes('图片文字已识别')) {
+        const panel = document.getElementById('kbPanel');
+        if (panel.classList.contains('show')) kbLoadList();
+    }
+};
 </script>
 </body>
 </html>"""

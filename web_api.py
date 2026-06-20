@@ -16,15 +16,25 @@ if key:
 
 from llm import LLM
 from agent import Agent
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import tempfile
+import uuid
+import shutil
 
 app = FastAPI(title="Mini Agent")
 
 # 全局 Agent
 llm = LLM()
 agent = Agent(llm=llm)
+
+# 上传目录（存放拍照上传的图片）
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+# 挂载静态文件路由，让上传的图片可以访问
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 class ChatRequest(BaseModel):
@@ -59,6 +69,36 @@ def reset():
 def history():
     """返回历史消息（前端用来恢复聊天记录）"""
     return {"history": agent.get_history()}
+
+
+@app.post("/api/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+    """上传图片 -> 保存 -> OCR 识别文字"""
+    # 保存上传的图片
+    ext = os.path.splitext(file.filename or "photo.png")[1] or ".png"
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # 调用 OCR 工具识别文字
+    try:
+        result = execute_tool("read_image_text", {"image_path": filepath})
+    except Exception as e:
+        result = f"❌ 识别失败: {e}"
+
+    # 把 OCR 结果注入到 agent 的对话中，方便后续追问
+    agent.messages.append({
+        "role": "user",
+        "content": f"我上传了一张图片，识别出的文字如下：\n\n{result}",
+    })
+
+    return {
+        "ocr": result,
+        "url": f"/uploads/{filename}",
+    }
 
 
 # ====== HTML 前端（赛博科技风）======
@@ -486,6 +526,29 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: none; cursor: not-allowed; opacity: 0.4;
         }
 
+        /* ── 拍照/上传按钮 ── */
+        .btn-camera {
+            width: 44px; height: 44px;
+            border: 1px solid rgba(100, 100, 255, 0.15);
+            border-radius: 14px;
+            background: rgba(12, 12, 36, 0.5);
+            color: rgba(180, 180, 255, 0.4);
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.25s;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .btn-camera:hover {
+            border-color: rgba(100, 100, 255, 0.3);
+            background: rgba(20, 20, 50, 0.6);
+            color: rgba(200, 200, 255, 0.7);
+            box-shadow: 0 0 20px rgba(80, 80, 255, 0.08);
+        }
+        .btn-camera:active { transform: scale(0.95); }
+
         /* ── 底部署名 ── */
         .footer {
             text-align: center;
@@ -560,6 +623,11 @@ HTML_PAGE = """<!DOCTYPE html>
                 font-size: 14px;
                 border-radius: 12px;
             }
+            .btn-camera {
+                width: 40px; height: 40px;
+                border-radius: 12px;
+                font-size: 18px;
+            }
             .footer { display: none; }
         }
     </style>
@@ -602,6 +670,8 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="chat-box" id="chatBox"></div>
 
     <div class="input-area">
+        <button class="btn-camera" id="cameraBtn" onclick="document.getElementById('fileInput').click()" title="拍照/上传图片">📷</button>
+        <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none" onchange="uploadImage(this)">
         <div class="input-wrap">
             <input type="text" id="input" placeholder="输入你的问题..." autofocus>
         </div>
@@ -810,6 +880,47 @@ async function resetChat() {
 }
 
 loadHistory();
+
+// ── 图片上传/拍照 ──
+async function uploadImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // 显示上传中
+    addMsg('user', '📸 正在上传图片...');
+    setLoading(true);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        // 移除临时"上传中"消息
+        const lastMsg = chatBox.lastElementChild;
+        if (lastMsg) lastMsg.remove();
+
+        // 显示图片缩略图
+        const imgHtml = `<div style="margin-bottom:8px"><img src="${data.url}" style="max-width:100%;max-height:200px;border-radius:10px;border:1px solid rgba(100,100,255,0.15)"></div>`;
+
+        // 判断 OCR 是否成功
+        if (data.ocr && !data.ocr.startsWith('❌')) {
+            addMsg('assistant', `${imgHtml}📖 <strong>图片文字已识别</strong><br><br>${data.ocr.replace(/\\n/g, '<br>')}<br><br>💡 你可以继续追问图片内容～`);
+        } else {
+            addMsg('assistant', `${imgHtml}${data.ocr}`);
+        }
+    } catch (e) {
+        const lastMsg = chatBox.lastElementChild;
+        if (lastMsg) lastMsg.remove();
+        addMsg('error', '❌ 上传失败，请检查服务器');
+    }
+
+    // 重置文件输入，允许重复选同一张
+    input.value = '';
+    setLoading(false);
+    document.getElementById('input').focus();
+}
 </script>
 </body>
 </html>"""

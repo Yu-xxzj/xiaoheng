@@ -496,12 +496,71 @@ HTML_PAGE = """<!DOCTYPE html>
             flex-shrink: 0;
         }
 
-        @media (max-width: 600px) {
-            .container { height: 100vh; border-radius: 0; max-width: 100%; }
-            .msg-wrap { max-width: 85%; }
-            header { padding: 12px 16px; }
-            .chat-box { padding: 14px 16px; gap: 14px; }
-            .input-area { padding: 12px 16px 16px; }
+        /* ── 手机端适配 ── */
+        @media (max-width: 768px) {
+            body {
+                background: linear-gradient(-45deg, #0a0a1a, #0d0d2b, #1a0a2e, #0a1628, #0d0d2b);
+                background-size: 400% 400%;
+                animation: aurora 15s ease infinite;
+                overflow: hidden;
+                /* 禁止下拉刷新 */
+                overscroll-behavior: none;
+                -webkit-overflow-scrolling: touch;
+            }
+            /* 手机上关掉粒子 Canvas */
+            #particleCanvas { display: none; }
+            /* 手机上去掉大光球（太耗性能） */
+            .glow-orb { display: none; }
+            .container {
+                height: 100dvh;
+                border-radius: 0;
+                max-width: 100%;
+                backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px);
+            }
+            .top-glow { height: 1px; }
+            header { padding: 10px 14px; }
+            .logo-icon { width: 32px; height: 32px; font-size: 16px; }
+            .logo-wrap { width: 32px; height: 32px; }
+            .logo-ring { display: none; }
+            .header-title h1 { font-size: 15px; }
+            .header-title .desc { font-size: 10px; }
+            .btn-reset { padding: 5px 12px; font-size: 11px; }
+            .status-bar { padding: 4px 14px; gap: 10px; font-size: 10px; }
+            .status-divider { display: none; }
+            .chat-box {
+                padding: 12px 14px;
+                gap: 12px;
+                /* 让键盘弹出时聊天区可滚动 */
+                overflow-y: auto;
+            }
+            .msg-wrap { max-width: 88%; }
+            .msg {
+                padding: 10px 13px;
+                font-size: 14px;
+                line-height: 1.6;
+                border-radius: 14px;
+            }
+            .msg-row.user .msg { border-bottom-right-radius: 4px; }
+            .msg-row.bot .msg { border-bottom-left-radius: 4px; }
+            .avatar { width: 28px; height: 28px; font-size: 12px; }
+            .msg-time { font-size: 9px; }
+            .typing-bubbles { padding: 11px 16px; }
+            .input-area {
+                padding: 10px 14px 14px;
+                gap: 8px;
+            }
+            .input-wrap input {
+                padding: 11px 14px;
+                font-size: 16px;  /* 防止 iOS 缩放 */
+                border-radius: 12px;
+            }
+            .input-area button {
+                padding: 11px 20px;
+                font-size: 14px;
+                border-radius: 12px;
+            }
+            .footer { display: none; }
         }
     </style>
 </head>
@@ -553,6 +612,21 @@ HTML_PAGE = """<!DOCTYPE html>
 </div>
 
 <script>
+// ── 移动端兼容 ──
+const isMobile = window.innerWidth < 768;
+
+if (isMobile) {
+    // 键盘弹出时滚动到输入框
+    const inputEl = document.getElementById('input');
+    inputEl.addEventListener('focus', () => {
+        setTimeout(() => inputEl.scrollIntoView({ behavior: 'smooth' }), 300);
+    });
+    // 键盘收回时恢复
+    inputEl.addEventListener('blur', () => {
+        window.scrollTo(0, 0);
+    });
+}
+
 // ── 粒子背景 ──
 const canvas = document.getElementById('particleCanvas');
 const ctx = canvas.getContext('2d');

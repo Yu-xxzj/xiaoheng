@@ -17,7 +17,7 @@ if key:
 from llm import LLM
 from agent import Agent
 from tools import execute_tool, _kb as kb
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -129,6 +129,32 @@ async def chat_stream_get(message: str = ""):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── WebSocket 流式聊天（绕过 HTTP 缓冲，真正逐字输出）───
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        data = await websocket.receive_text()
+        msg = json.loads(data).get("message", "")
+        if not msg:
+            await websocket.send_json({"type": "error", "content": "消息为空"})
+            return
+
+        for event in agent.run_stream(msg):
+            await websocket.send_json(event)
+
+        await websocket.send_json({"type": "done", "content": ""})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        except RuntimeError:
+            pass
 
 
 # ── 知识库管理 API ─────────────────────────
@@ -1301,50 +1327,39 @@ async function send() {
     const streamBubble = document.getElementById('streamMsg');
 
     let buffer = '';
-    let closed = false;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/ws');
 
-    // 用 EventSource 替代 fetch ReadableStream — 专为 SSE 设计，不缓冲
-    const url = '/api/chat/stream?message=' + encodeURIComponent(msg);
-    const evtSource = new EventSource(url);
+    ws.onopen = function() {
+        ws.send(JSON.stringify({message: msg}));
+    };
 
-    evtSource.onmessage = function(e) {
-        if (closed) return;
-        const payload = e.data.trim();
-        if (payload === '[DONE]') {
-            evtSource.close();
-            closed = true;
+    ws.onmessage = function(e) {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'text') {
+            buffer += ev.content;
+            streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
+            chatBox.scrollTop = chatBox.scrollHeight;
+        } else if (ev.type === 'reasoning') {
+            // 可选显示推理过程
+        } else if (ev.type === 'tool') {
+            const toolNote = document.createElement('div');
+            toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
+            toolNote.textContent = `🔧 ${ev.name}`;
+            row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
+        } else if (ev.type === 'done' || ev.type === 'error') {
+            ws.close();
             if (!buffer.trim()) {
                 streamBubble.innerHTML = '（模型未返回内容）';
             }
             streamBubble.id = '';
             setLoading(false);
             input.focus();
-            return;
-        }
-        try {
-            const ev = JSON.parse(payload);
-            if (ev.type === 'text') {
-                buffer += ev.content;
-                streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
-                chatBox.scrollTop = chatBox.scrollHeight;
-            } else if (ev.type === 'reasoning') {
-                // 可选：显示推理过程（暂时跳过，等稳定再开）
-            } else if (ev.type === 'tool') {
-                const toolNote = document.createElement('div');
-                toolNote.style.cssText = 'font-size:11px;color:rgba(100,200,255,0.3);padding:2px 0;';
-                toolNote.textContent = `🔧 ${ev.name}`;
-                row.querySelector('.msg-wrap').insertBefore(toolNote, streamBubble);
-            }
-        } catch (e) {
-            // 跳过解析失败的行
         }
     };
 
-    evtSource.onerror = function() {
-        if (closed) return;
-        evtSource.close();
-        closed = true;
-        streamBubble.innerHTML = buffer || '❌ 连接断开，请重试';
+    ws.onerror = function() {
+        streamBubble.innerHTML = buffer || '❌ WebSocket 连接失败';
         streamBubble.id = '';
         setLoading(false);
         input.focus();

@@ -20,6 +20,8 @@ SYSTEM_PROMPT = """你是一个有用的 AI 助手，配备了多种工具，可
 - kb_add_file: 导入文件到知识库
 - kb_add_text: 添加文本笔记到知识库
 - kb_list: 查看知识库内容
+- read_image_text: 识别图片中的文字（OCR），适合拍课本/笔记照片
+- run_python: 执行 Python 代码，用于计算、数据处理、算法验证
 
 # 工作方式
 1. 当你需要信息或执行操作时，调用对应的工具

@@ -1329,7 +1329,7 @@ async function send() {
                     const ev = JSON.parse(payload);
                     if (ev.type === 'text') {
                         buffer += ev.content;
-                        streamBubble.innerHTML = buffer.replace(/\\n/g, '<br>');
+                        streamBubble.innerHTML = buffer.replace(/\n/g, '<br>');
                         chatBox.scrollTop = chatBox.scrollHeight;
                     } else if (ev.type === 'tool') {
                         // 在消息上方显示工具调用提示

@@ -25,3 +25,8 @@ start_web.sh
 
 # Git
 *.log
+
+# Binaries
+ngrok
+*.tgz
+*.tar.gz
